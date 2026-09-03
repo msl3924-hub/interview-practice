@@ -14,8 +14,9 @@
   h1{font-size:16px;font-weight:600;margin:0 0 16px;letter-spacing:-.01em}
 
   .stage{position:relative;background:#000;border:1px solid var(--line);border-radius:10px;overflow:hidden;aspect-ratio:16/9}
-  .stage video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+  .stage video{width:100%;height:100%;display:block;background:#000}
   #live{object-fit:cover}
+  #playback{object-fit:contain}
   .hidden{display:none}
   #live.mirror{transform:scaleX(-1)}
 
@@ -47,6 +48,7 @@
 
   .msg{margin:12px 0 0;font-size:13px;color:var(--muted);line-height:1.6}
   .msg b{color:var(--hold);font-weight:500}
+  .fmt{margin:6px 0 0;font-size:12px;color:#5f656f}
 </style>
 
 <div class="wrap">
@@ -76,6 +78,7 @@
   </div>
 
   <p class="msg" id="msg">스페이스바로 시작하고 멈출 수 있습니다.</p>
+  <p class="fmt" id="fmt"></p>
 </div>
 
 <script>
@@ -84,10 +87,10 @@
   var $=function(id){return document.getElementById(id);};
   var live=$('live'), playback=$('playback'), curtain=$('curtain'), tag=$('tag'), timeEl=$('time'),
       btnRec=$('btnRec'), btnReplay=$('btnReplay'), btnSave=$('btnSave'), btnRetake=$('btnRetake'),
-      btnMirror=$('btnMirror'), msg=$('msg');
+      btnMirror=$('btnMirror'), msg=$('msg'), fmtEl=$('fmt');
 
   var stream=null, recorder=null, chunks=[], mime='', blob=null, blobUrl=null, saved=false;
-  var tick=null, phase='cold'; // cold | ready | recording | review
+  var tick=null, phase='cold', measured=0;
 
   $('grant').onclick=function(){
     var b=this; b.disabled=true; b.textContent='허용을 기다리는 중…';
@@ -99,6 +102,7 @@
       curtain.classList.add('gone');
       tag.className='tag';
       phase='ready'; btnRec.disabled=false;
+      fmtEl.textContent='녹화 형식 '+(pickMime()||'브라우저 기본');
     }).catch(function(err){
       b.disabled=false; b.textContent='다시 시도';
       curtain.querySelector('p').textContent='카메라나 마이크를 열지 못했습니다 ('+(err&&err.name||'error')+'). '+
@@ -106,8 +110,15 @@
     });
   };
 
+  // mp4를 우선한다. webm은 녹화 직후 길이 정보가 없어 재생바가 동작하지 않는다.
   function pickMime(){
-    var list=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'];
+    var list=[
+      'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+      'video/mp4',
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm'
+    ];
     for(var i=0;i<list.length;i++) if(window.MediaRecorder&&MediaRecorder.isTypeSupported(list[i])) return list[i];
     return '';
   }
@@ -128,10 +139,10 @@
       msg.innerHTML='<b>이 브라우저는 녹화를 지원하지 않습니다.</b> Chrome이나 Edge 최신 버전에서 열어주세요.';
       return;
     }
-    chunks=[]; saved=false;
+    chunks=[]; saved=false; measured=0;
     recorder.ondataavailable=function(e){ if(e.data&&e.data.size) chunks.push(e.data); };
     recorder.onstop=review;
-    recorder.start(250);
+    recorder.start(1000);
 
     var t0=Date.now();
     phase='recording';
@@ -140,7 +151,10 @@
     btnReplay.classList.add('gone');
     btnSave.disabled=true; btnRetake.disabled=true;
     msg.textContent='답변이 끝나면 녹화 종료를 누르세요.';
-    tick=setInterval(function(){ timeEl.textContent=fmt((Date.now()-t0)/1000); },200);
+    tick=setInterval(function(){
+      measured=(Date.now()-t0)/1000;
+      timeEl.textContent=fmt(measured);
+    },200);
   }
 
   function stop(){
@@ -154,6 +168,7 @@
 
     phase='review';
     tag.className='tag done';
+    timeEl.textContent=fmt(measured);
     live.classList.add('hidden');
     playback.classList.remove('hidden');
     btnRec.disabled=true; btnRec.textContent='녹화 시작';
@@ -162,33 +177,17 @@
     msg.innerHTML='<b>아직 저장되지 않았습니다.</b> 다시 찍거나 창을 닫으면 이 영상은 사라집니다.';
 
     playback.src=blobUrl;
-    fixDuration(playback, function(){
-      timeEl.textContent=fmt(playback.duration||0);
-      playback.currentTime=0;
-      playback.play().catch(function(){
-        msg.innerHTML='아래 재생 버튼을 눌러 확인하세요. <b>저장 전까지는 남지 않습니다.</b>';
-      });
+    playback.load();
+    playback.play().catch(function(){
+      msg.innerHTML='화면 가운데 재생 버튼을 눌러 확인하세요. <b>저장 전까지는 남지 않습니다.</b>';
     });
   }
 
-  // MediaRecorder가 만든 webm은 길이가 무한대로 잡혀 재생바가 동작하지 않는다.
-  // 끝까지 한 번 이동시켜 브라우저가 실제 길이를 계산하게 만든다.
-  function fixDuration(v, done){
-    var settled=false;
-    var finish=function(){ if(settled) return; settled=true; v.ontimeupdate=null; done(); };
-    v.onloadedmetadata=function(){
-      if(v.duration!==Infinity && !isNaN(v.duration)){ finish(); return; }
-      v.ontimeupdate=function(){
-        if(v.duration!==Infinity && !isNaN(v.duration)) finish();
-      };
-      try{ v.currentTime=1e101; }catch(e){ finish(); }
-      setTimeout(finish, 2500); // 안전장치
-    };
-    v.load();
-  }
-
   btnReplay.onclick=function(){
-    playback.currentTime=0;
+    // 길이 정보가 없는 형식에서도 확실히 처음부터 돌아가도록 소스를 다시 물린다.
+    playback.pause();
+    playback.src=blobUrl;
+    playback.load();
     playback.play().catch(function(){});
   };
 
@@ -209,7 +208,7 @@
     if(!saved && blob && !confirm('아직 저장하지 않은 영상이 있습니다. 지우고 다시 찍을까요?')) return;
     playback.pause();
     if(blobUrl){ URL.revokeObjectURL(blobUrl); blobUrl=null; }
-    blob=null; chunks=[]; saved=false;
+    blob=null; chunks=[]; saved=false; measured=0;
     playback.removeAttribute('src'); playback.load();
     playback.classList.add('hidden');
     live.classList.remove('hidden');
