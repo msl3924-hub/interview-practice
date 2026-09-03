@@ -1,0 +1,242 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>면접 연습 녹화</title>
+<style>
+  :root{ --ink:#14161a; --panel:#1d2026; --line:#2f343d; --text:#e8e6e1; --muted:#8a8f99; --rec:#e0483c; --hold:#d9a441; }
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--ink);color:var(--text);
+    font-family:-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif;
+    font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  button{font:inherit;color:inherit;cursor:pointer;border:none;background:none}
+  button:focus-visible{outline:2px solid var(--text);outline-offset:2px}
+
+  .wrap{max-width:920px;margin:0 auto;padding:26px 20px 60px}
+  h1{font-size:16px;font-weight:600;margin:0 0 16px;letter-spacing:-.01em}
+
+  .stage{position:relative;background:#000;border:1px solid var(--line);border-radius:10px;overflow:hidden;aspect-ratio:16/9}
+  .stage video{width:100%;height:100%;object-fit:contain;display:block;background:#000}
+  #live{object-fit:cover}
+  .hidden{display:none}
+  #live.mirror{transform:scaleX(-1)}
+
+  .curtain{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    gap:14px;background:var(--panel);text-align:center;padding:28px}
+  .curtain.gone{display:none}
+  .curtain strong{display:block;font-size:16px;margin-bottom:3px}
+  .curtain p{margin:0;color:var(--muted);font-size:13.5px;max-width:40ch;line-height:1.6}
+
+  .tag{position:absolute;top:14px;left:14px;display:inline-flex;align-items:center;gap:7px;
+    background:rgba(10,11,13,.72);padding:5px 11px;border-radius:99px;font-size:13px;font-variant-numeric:tabular-nums}
+  .tag.gone{display:none}
+  .dot{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+  .tag.live .dot{background:var(--rec);animation:blink 1.1s infinite}
+  @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
+  @media (prefers-reduced-motion:reduce){ .tag.live .dot{animation:none} }
+  .tag.done .dot{background:var(--hold)}
+
+  .bar{display:flex;flex-wrap:wrap;gap:9px;margin-top:13px}
+  .btn{padding:10px 18px;border-radius:8px;background:#23272f;border:1px solid var(--line);font-size:14px;font-weight:500}
+  .btn:hover:not(:disabled){background:#2c313a}
+  .btn:disabled{opacity:.35;cursor:not-allowed}
+  .btn.rec{background:var(--rec);border-color:var(--rec);color:#fff}
+  .btn.rec:hover:not(:disabled){background:#ee5347}
+  .btn.keep{background:var(--text);border-color:var(--text);color:var(--ink);font-weight:600}
+  .btn.keep:hover:not(:disabled){background:#fff}
+  .btn.plain{background:none}
+  .btn.gone{display:none}
+
+  .msg{margin:12px 0 0;font-size:13px;color:var(--muted);line-height:1.6}
+  .msg b{color:var(--hold);font-weight:500}
+</style>
+
+<div class="wrap">
+  <h1>면접 연습 녹화</h1>
+
+  <div class="stage">
+    <video id="live" autoplay muted playsinline class="mirror"></video>
+    <video id="playback" controls playsinline class="hidden"></video>
+
+    <div class="tag gone" id="tag"><span class="dot"></span><span id="time">0:00</span></div>
+
+    <div class="curtain" id="curtain">
+      <div>
+        <strong>카메라와 마이크가 필요합니다</strong>
+        <p>영상은 이 브라우저 안에만 잠시 머무릅니다. 어디로도 전송되지 않고, 저장을 누르지 않으면 다시 찍는 순간 사라집니다.</p>
+      </div>
+      <button class="btn keep" id="grant">카메라 켜기</button>
+    </div>
+  </div>
+
+  <div class="bar">
+    <button class="btn rec" id="btnRec" disabled>녹화 시작</button>
+    <button class="btn gone" id="btnReplay">처음부터 다시 보기</button>
+    <button class="btn keep" id="btnSave" disabled>이 영상 저장</button>
+    <button class="btn" id="btnRetake" disabled>다시 찍기</button>
+    <button class="btn plain" id="btnMirror">좌우 반전 끄기</button>
+  </div>
+
+  <p class="msg" id="msg">스페이스바로 시작하고 멈출 수 있습니다.</p>
+</div>
+
+<script>
+(function(){
+  'use strict';
+  var $=function(id){return document.getElementById(id);};
+  var live=$('live'), playback=$('playback'), curtain=$('curtain'), tag=$('tag'), timeEl=$('time'),
+      btnRec=$('btnRec'), btnReplay=$('btnReplay'), btnSave=$('btnSave'), btnRetake=$('btnRetake'),
+      btnMirror=$('btnMirror'), msg=$('msg');
+
+  var stream=null, recorder=null, chunks=[], mime='', blob=null, blobUrl=null, saved=false;
+  var tick=null, phase='cold'; // cold | ready | recording | review
+
+  $('grant').onclick=function(){
+    var b=this; b.disabled=true; b.textContent='허용을 기다리는 중…';
+    navigator.mediaDevices.getUserMedia({
+      video:{width:{ideal:1280},height:{ideal:720},facingMode:'user'},
+      audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}
+    }).then(function(s){
+      stream=s; live.srcObject=s;
+      curtain.classList.add('gone');
+      tag.className='tag';
+      phase='ready'; btnRec.disabled=false;
+    }).catch(function(err){
+      b.disabled=false; b.textContent='다시 시도';
+      curtain.querySelector('p').textContent='카메라나 마이크를 열지 못했습니다 ('+(err&&err.name||'error')+'). '+
+        '주소창 왼쪽 아이콘에서 카메라와 마이크를 허용으로 바꾼 뒤 다시 눌러주세요.';
+    });
+  };
+
+  function pickMime(){
+    var list=['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'];
+    for(var i=0;i<list.length;i++) if(window.MediaRecorder&&MediaRecorder.isTypeSupported(list[i])) return list[i];
+    return '';
+  }
+  function fmt(s){ s=Math.max(0,s); var m=Math.floor(s/60), r=Math.floor(s%60); return m+':'+(r<10?'0':'')+r; }
+
+  btnRec.onclick=function(){
+    if(phase==='ready') start();
+    else if(phase==='recording') stop();
+  };
+
+  function start(){
+    if(!stream) return;
+    mime=pickMime();
+    try{
+      recorder = mime ? new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:2500000})
+                      : new MediaRecorder(stream);
+    }catch(e){
+      msg.innerHTML='<b>이 브라우저는 녹화를 지원하지 않습니다.</b> Chrome이나 Edge 최신 버전에서 열어주세요.';
+      return;
+    }
+    chunks=[]; saved=false;
+    recorder.ondataavailable=function(e){ if(e.data&&e.data.size) chunks.push(e.data); };
+    recorder.onstop=review;
+    recorder.start(250);
+
+    var t0=Date.now();
+    phase='recording';
+    tag.className='tag live';
+    btnRec.textContent='녹화 종료';
+    btnReplay.classList.add('gone');
+    btnSave.disabled=true; btnRetake.disabled=true;
+    msg.textContent='답변이 끝나면 녹화 종료를 누르세요.';
+    tick=setInterval(function(){ timeEl.textContent=fmt((Date.now()-t0)/1000); },200);
+  }
+
+  function stop(){
+    if(recorder&&recorder.state!=='inactive') recorder.stop();
+    clearInterval(tick); tick=null;
+  }
+
+  function review(){
+    blob=new Blob(chunks,{type:mime||'video/webm'});
+    blobUrl=URL.createObjectURL(blob);
+
+    phase='review';
+    tag.className='tag done';
+    live.classList.add('hidden');
+    playback.classList.remove('hidden');
+    btnRec.disabled=true; btnRec.textContent='녹화 시작';
+    btnReplay.classList.remove('gone');
+    btnSave.disabled=false; btnRetake.disabled=false;
+    msg.innerHTML='<b>아직 저장되지 않았습니다.</b> 다시 찍거나 창을 닫으면 이 영상은 사라집니다.';
+
+    playback.src=blobUrl;
+    fixDuration(playback, function(){
+      timeEl.textContent=fmt(playback.duration||0);
+      playback.currentTime=0;
+      playback.play().catch(function(){
+        msg.innerHTML='아래 재생 버튼을 눌러 확인하세요. <b>저장 전까지는 남지 않습니다.</b>';
+      });
+    });
+  }
+
+  // MediaRecorder가 만든 webm은 길이가 무한대로 잡혀 재생바가 동작하지 않는다.
+  // 끝까지 한 번 이동시켜 브라우저가 실제 길이를 계산하게 만든다.
+  function fixDuration(v, done){
+    var settled=false;
+    var finish=function(){ if(settled) return; settled=true; v.ontimeupdate=null; done(); };
+    v.onloadedmetadata=function(){
+      if(v.duration!==Infinity && !isNaN(v.duration)){ finish(); return; }
+      v.ontimeupdate=function(){
+        if(v.duration!==Infinity && !isNaN(v.duration)) finish();
+      };
+      try{ v.currentTime=1e101; }catch(e){ finish(); }
+      setTimeout(finish, 2500); // 안전장치
+    };
+    v.load();
+  }
+
+  btnReplay.onclick=function(){
+    playback.currentTime=0;
+    playback.play().catch(function(){});
+  };
+
+  btnSave.onclick=function(){
+    if(!blob) return;
+    var d=new Date(), p=function(n){return (n<10?'0':'')+n;};
+    var ext=(mime.indexOf('mp4')>-1)?'mp4':'webm';
+    var a=document.createElement('a');
+    a.href=blobUrl;
+    a.download='면접연습_'+d.getFullYear()+p(d.getMonth()+1)+p(d.getDate())+'_'+p(d.getHours())+p(d.getMinutes())+'.'+ext;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    saved=true;
+    btnSave.textContent='저장됨';
+    msg.textContent='저장했습니다. 다운로드 폴더를 확인하세요.';
+  };
+
+  btnRetake.onclick=function(){
+    if(!saved && blob && !confirm('아직 저장하지 않은 영상이 있습니다. 지우고 다시 찍을까요?')) return;
+    playback.pause();
+    if(blobUrl){ URL.revokeObjectURL(blobUrl); blobUrl=null; }
+    blob=null; chunks=[]; saved=false;
+    playback.removeAttribute('src'); playback.load();
+    playback.classList.add('hidden');
+    live.classList.remove('hidden');
+    tag.className='tag'; timeEl.textContent='0:00';
+    btnRec.disabled=false;
+    btnReplay.classList.add('gone');
+    btnSave.disabled=true; btnSave.textContent='이 영상 저장';
+    btnRetake.disabled=true;
+    msg.textContent='스페이스바로 시작하고 멈출 수 있습니다.';
+    phase='ready';
+  };
+
+  btnMirror.onclick=function(){
+    var on=live.classList.toggle('mirror');
+    this.textContent = on ? '좌우 반전 끄기' : '좌우 반전 켜기';
+  };
+
+  document.addEventListener('keydown',function(e){
+    if(e.code!=='Space') return;
+    var t=e.target.tagName;
+    if(t==='INPUT'||t==='TEXTAREA'||t==='BUTTON'||t==='VIDEO') return;
+    e.preventDefault();
+    if(phase==='ready'||phase==='recording') btnRec.onclick();
+  });
+
+  window.addEventListener('beforeunload',function(e){
+    if(phase==='review'&&blob&&!saved){ e.preventDefault(); e.returnValue=''; }
+  });
+})();
+</script>
